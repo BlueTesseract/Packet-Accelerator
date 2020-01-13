@@ -1,7 +1,0 @@
-kernel/crypto/echainiv.ko
-kernel/drivers/char/hw_random/rng-core.ko
-kernel/drivers/misc/altera_sysid.ko
-kernel/drivers/net/wireless/mediatek/mt7601u/mt7601u.ko
-kernel/drivers/usb/gadget/function/usb_f_mass_storage.ko
-kernel/drivers/usb/gadget/legacy/g_mass_storage.ko
-kernel/drivers/usb/gadget/libcomposite.ko

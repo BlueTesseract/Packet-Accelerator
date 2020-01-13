@@ -1,0 +1,239 @@
+commit 9c0a35dcf5a66f0c94e9f1512c3fddc2b05aee0f
+Author: Mikolaj Kowalik <kowalikmikolaj95@gmail.com>
+Date:   Tue Jan 14 00:25:38 2020 +0100
+
+    Add new conntrack extension
+
+diff --git a/include/net/netfilter/nf_conntrack_extend.h b/include/net/netfilter/nf_conntrack_extend.h
+index 21f887c5058c..4a08d3cbb479 100644
+--- a/include/net/netfilter/nf_conntrack_extend.h
++++ b/include/net/netfilter/nf_conntrack_extend.h
+@@ -27,6 +27,9 @@ enum nf_ct_ext_id {
+ #endif
+ #if IS_ENABLED(CONFIG_NETFILTER_SYNPROXY)
+ 	NF_CT_EXT_SYNPROXY,
++#endif
++#if defined(CONFIG_NF_CONNTRACK_FPATH)
++	NF_CT_EXT_FPATH,
+ #endif
+ 	NF_CT_EXT_NUM,
+ };
+@@ -40,6 +43,7 @@ enum nf_ct_ext_id {
+ #define NF_CT_EXT_TIMEOUT_TYPE struct nf_conn_timeout
+ #define NF_CT_EXT_LABELS_TYPE struct nf_conn_labels
+ #define NF_CT_EXT_SYNPROXY_TYPE struct nf_conn_synproxy
++#define NF_CT_EXT_FPATH_TYPE struct nf_conn_fpath
+ 
+ /* Extensions: optional stuff which isn't permanently in struct. */
+ struct nf_ct_ext {
+diff --git a/include/net/netfilter/nf_conntrack_fpath.h b/include/net/netfilter/nf_conntrack_fpath.h
+new file mode 100644
+index 000000000000..e547d3e99e34
+--- /dev/null
++++ b/include/net/netfilter/nf_conntrack_fpath.h
+@@ -0,0 +1,67 @@
++/*
++ * (C) 2020 Mikolaj Kowalik <kowalikmikolaj95@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef _NF_CONNTRACK_FPATH_H
++#define _NF_CONNTRACK_FPATH_H
++#include <net/net_namespace.h>
++#include <linux/netfilter/nf_conntrack_common.h>
++#include <linux/netfilter/nf_conntrack_tuple_common.h>
++#include <net/netfilter/nf_conntrack.h>
++#include <net/netfilter/nf_conntrack_extend.h>
++
++struct nf_conn_fpath {
++	int todo;
++};
++
++static inline
++struct nf_conn_fpath *nf_conn_fpath_find(const struct nf_conn *ct)
++{
++	return nf_ct_ext_find(ct, NF_CT_EXT_FPATH);
++}
++
++static inline
++struct nf_conn_fpath *nf_ct_fpath_ext_add(struct nf_conn *ct)
++{
++	struct nf_conn_fpath *fpath;
++
++	fpath = nf_ct_ext_add(ct, NF_CT_EXT_FPATH, GFP_ATOMIC);
++	if (!fpath)
++		pr_debug("Failed to add fpath netfilter extension");
++
++
++	return fpath;
++};
++
++static inline
++struct nf_conn_fpath *nf_ct_fpath_find(const struct nf_conn *ct)
++{
++#ifdef CONFIG_NF_CONNTRACK_FPATH
++	return nf_ct_ext_find(ct, NF_CT_EXT_FPATH);
++#else
++	return NULL;
++#endif
++}
++
++#ifdef CONFIG_NF_CONNTRACK_FPATH
++int nf_conntrack_fpath_init(void);
++void nf_conntrack_fpath_fini(void);
++#else
++static inline int nf_conntrack_fpath_init(void)
++{
++        return 0;
++}
++
++static inline void nf_conntrack_fpath_fini(void)
++{
++        return;
++}
++#endif /* CONFIG_NF_CONNTRACK_FPATH */
++
++int nf_conntrack_fpath_init(void);
++void nf_conntrack_fpath_fini(void);
++#endif /* _NF_CONNTRACK_FPATH_H */
+diff --git a/net/netfilter/Kconfig b/net/netfilter/Kconfig
+index 6548271209a0..62f2415d4666 100644
+--- a/net/netfilter/Kconfig
++++ b/net/netfilter/Kconfig
+@@ -156,6 +156,13 @@ config NF_CONNTRACK_TIMESTAMP
+ 
+ 	  If unsure, say `N'.
+ 
++config NF_CONNTRACK_FPATH
++	bool "Netfilter based fast path"
++	help
++	  This option enables support fastpath
++
++	  If unsure, say `N'.
++
+ config NF_CONNTRACK_LABELS
+ 	bool "Connection tracking labels"
+ 	help
+diff --git a/net/netfilter/Makefile b/net/netfilter/Makefile
+index 4894a85cdd0b..e418606b6106 100644
+--- a/net/netfilter/Makefile
++++ b/net/netfilter/Makefile
+@@ -11,6 +11,7 @@ nf_conntrack-$(CONFIG_NF_CONNTRACK_TIMEOUT) += nf_conntrack_timeout.o
+ nf_conntrack-$(CONFIG_NF_CONNTRACK_TIMESTAMP) += nf_conntrack_timestamp.o
+ nf_conntrack-$(CONFIG_NF_CONNTRACK_EVENTS) += nf_conntrack_ecache.o
+ nf_conntrack-$(CONFIG_NF_CONNTRACK_LABELS) += nf_conntrack_labels.o
++nf_conntrack-$(CONFIG_NF_CONNTRACK_FPATH) += nf_conntrack_fpath.o
+ nf_conntrack-$(CONFIG_NF_CT_PROTO_DCCP) += nf_conntrack_proto_dccp.o
+ nf_conntrack-$(CONFIG_NF_CT_PROTO_SCTP) += nf_conntrack_proto_sctp.o
+ nf_conntrack-$(CONFIG_NF_CT_PROTO_GRE) += nf_conntrack_proto_gre.o
+diff --git a/net/netfilter/nf_conntrack_core.c b/net/netfilter/nf_conntrack_core.c
+index 2a714527cde1..27de8f9e9155 100644
+--- a/net/netfilter/nf_conntrack_core.c
++++ b/net/netfilter/nf_conntrack_core.c
+@@ -50,6 +50,7 @@
+ #include <net/netfilter/nf_conntrack_timestamp.h>
+ #include <net/netfilter/nf_conntrack_timeout.h>
+ #include <net/netfilter/nf_conntrack_labels.h>
++#include <net/netfilter/nf_conntrack_fpath.h>
+ #include <net/netfilter/nf_conntrack_synproxy.h>
+ #include <net/netfilter/nf_nat.h>
+ #include <net/netfilter/nf_nat_helper.h>
+@@ -1470,6 +1471,7 @@ init_conntrack(struct net *net, struct nf_conn *tmpl,
+ 	nf_ct_acct_ext_add(ct, GFP_ATOMIC);
+ 	nf_ct_tstamp_ext_add(ct, GFP_ATOMIC);
+ 	nf_ct_labels_ext_add(ct);
++	// nf_ct_fpath_ext_add(ct);
+ 
+ 	ecache = tmpl ? nf_ct_ecache_find(tmpl) : NULL;
+ 	nf_ct_ecache_ext_add(ct, ecache ? ecache->ctmask : 0,
+@@ -2345,7 +2347,7 @@ EXPORT_SYMBOL_GPL(nf_conntrack_set_hashsize);
+ static __always_inline unsigned int total_extension_size(void)
+ {
+ 	/* remember to add new extensions below */
+-	BUILD_BUG_ON(NF_CT_EXT_NUM > 9);
++	BUILD_BUG_ON(NF_CT_EXT_NUM > 10);
+ 
+ 	return sizeof(struct nf_ct_ext) +
+ 	       sizeof(struct nf_conn_help)
+@@ -2368,6 +2370,9 @@ static __always_inline unsigned int total_extension_size(void)
+ #endif
+ #if IS_ENABLED(CONFIG_NETFILTER_SYNPROXY)
+ 		+ sizeof(struct nf_conn_synproxy)
++#endif
++#if defined(CONFIG_NF_CONNTRACK_FPATH)
++		+ sizeof(struct nf_conn_fpath)
+ #endif
+ 	;
+ };
+@@ -2451,6 +2456,10 @@ int nf_conntrack_init_start(void)
+ 	if (ret < 0)
+ 		goto err_labels;
+ 
++	ret = nf_conntrack_fpath_init();
++	if (ret < 0)
++		goto err_fpath;
++
+ 	ret = nf_conntrack_seqadj_init();
+ 	if (ret < 0)
+ 		goto err_seqadj;
+@@ -2467,6 +2476,8 @@ int nf_conntrack_init_start(void)
+ err_proto:
+ 	nf_conntrack_seqadj_fini();
+ err_seqadj:
++	nf_conntrack_fpath_fini();
++err_fpath:
+ 	nf_conntrack_labels_fini();
+ err_labels:
+ 	nf_conntrack_helper_fini();
+diff --git a/net/netfilter/nf_conntrack_fpath.c b/net/netfilter/nf_conntrack_fpath.c
+new file mode 100644
+index 000000000000..f3c06b544259
+--- /dev/null
++++ b/net/netfilter/nf_conntrack_fpath.c
+@@ -0,0 +1,43 @@
++/*
++ * (C) 2020 by Mikolaj Kowalik <kowalikmikolaj95@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation (or any later at your option).
++ */
++
++#include <linux/types.h>
++#include <linux/netfilter.h>
++#include <linux/skbuff.h>
++#include <linux/vmalloc.h>
++#include <linux/stddef.h>
++#include <linux/err.h>
++#include <linux/percpu.h>
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/slab.h>
++#include <linux/export.h>
++
++#include <net/netfilter/nf_conntrack.h>
++#include <net/netfilter/nf_conntrack_core.h>
++#include <net/netfilter/nf_conntrack_extend.h>
++#include <net/netfilter/nf_conntrack_fpath.h>
++
++static const struct nf_ct_ext_type fpath_extend = {
++	.len	= sizeof(struct nf_conn_fpath),
++	.align	= __alignof__(struct nf_conn_fpath),
++	.id	= NF_CT_EXT_FPATH,
++};
++
++int nf_conntrack_fpath_init(void)
++{
++	int ret = nf_ct_extend_register(&fpath_extend);
++	if (ret < 0)
++		pr_err("nf_ct_fpath: Unable to register fpath extension.\n");
++	return ret;
++}
++
++void nf_conntrack_fpath_fini(void)
++{
++	nf_ct_extend_unregister(&fpath_extend);
++}
