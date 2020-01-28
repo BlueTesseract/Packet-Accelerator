@@ -8,6 +8,7 @@
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_fpath.h>
 
+
 int nfacc_enable = 0;
 int nfacc_debug = 0;
 
@@ -20,9 +21,16 @@ static unsigned int pre_routing_hook(void *priv,
 		enum ip_conntrack_info ctinfo;
 		struct nf_conn *ct;
 		struct nf_conn_fpath * fpath;
+		struct ethhdr *ehdr;
+		ehdr = eth_hdr(skb);
+
 		printk(KERN_INFO "pre_routing_hook: %p:%d\n", skb, icmp_hdr(skb)->type);
 		if (skb->dev)
-			printk(KERN_INFO "   [dev:%s]\n", skb->dev->name);
+			printk(KERN_INFO "   [dev:%s] %ld\n", skb->dev->name, skb->_skb_refdst);
+		if (ehdr) {
+			printk(KERN_INFO "   h_src 0x%pM\n", ehdr->h_source);
+			printk(KERN_INFO "   h_dest 0x%pM\n", ehdr->h_dest);
+		}
 
 		ct = nf_ct_get(skb, &ctinfo);
 		if (ct) {
@@ -39,13 +47,40 @@ static unsigned int pre_routing_hook(void *priv,
 				printk(KERN_INFO "   adding ct ext\n");
 			}
 
-			if (fpath)
+			if (fpath) {
 				fpath->todo = 0;
+				fpath->configured = FP_UNCONFIGURED;
+			}
 			else
 				printk(KERN_INFO "cannot add fpath extension :(\n");
 		} else {
 			printk(KERN_INFO "   [%p] fpath->todo = %d", fpath, fpath->todo);
 			fpath->todo++;
+			if (fpath->configured == FP_UNCONFIGURED) {
+				fpath->configured = FP_CONFIGURING;
+				fpath->skb_refdst[DIR_OUT_DEV] = 0;
+				fpath->skb_refdst[DIR_IN_DEV] = 0;
+
+				fpath->dev[DIR_OUT_DEV] = NULL;
+				fpath->dev[DIR_IN_DEV] = skb->dev;
+				printk("   to learn [%p]\n", skb);
+			}
+
+			if (fpath->configured == FP_CONFIGURED) {
+				int dir;
+				if (skb->dev == fpath->dev[DIR_IN_DEV])
+					dir = DIR_OUT_DEV;
+				else
+					dir = DIR_IN_DEV;
+				skb->_skb_refdst = fpath->skb_refdst[dir];
+				skb->protocol = htons(ETH_P_IP);
+				skb->dev = fpath->dev[dir];
+				skb->pkt_type = PACKET_OUTGOING;
+				skb->no_fcs = 1;
+				printk("   accelerating [%p]\n", skb);
+				dev_queue_xmit(skb);
+				return NF_STOLEN;
+			}
 		}
 	}
 
@@ -60,10 +95,17 @@ static unsigned int post_routing_hook(void *priv,
 		enum ip_conntrack_info ctinfo;
 		struct nf_conn *ct;
 		struct nf_conn_fpath * fpath;
+		struct ethhdr *ehdr;
+		ehdr = eth_hdr(skb);
+
 		printk(KERN_INFO "post_routing_hook: %p:%p:%d\n", skb, skb->sk, icmp_hdr(skb)->type);
 		if (skb->dev)
-			printk(KERN_INFO "   [dev:%s]\n", skb->dev->name);
+			printk(KERN_INFO "   [dev:%s] %ld\n", skb->dev->name, skb->_skb_refdst);
 
+		if (ehdr) {
+			printk(KERN_INFO "   h_src 0x%pM\n", ehdr->h_source);
+			printk(KERN_INFO "   h_dest 0x%pM\n", ehdr->h_dest);
+		}
 		ct = nf_ct_get(skb, &ctinfo);
 		if (ct) {
 			test_bit(IPS_CONFIRMED_BIT, &ct->status);
@@ -75,6 +117,17 @@ static unsigned int post_routing_hook(void *priv,
 
 		if (fpath) {
 			printk(KERN_INFO "   [%p] fpath->todo = %d", fpath, fpath->todo);
+			if (fpath->configured == FP_CONFIGURING) {
+				if (skb->dev == fpath->dev[DIR_IN_DEV]) {
+					fpath->skb_refdst[DIR_IN_DEV] = skb->_skb_refdst;
+				} else {
+					fpath->skb_refdst[DIR_OUT_DEV] = skb->_skb_refdst;
+					fpath->dev[DIR_OUT_DEV] = skb->dev;
+				}
+				printk("   learning [%p]\n", skb);
+				if (fpath->skb_refdst[DIR_IN_DEV] != 0 && fpath->skb_refdst[DIR_OUT_DEV] != 0)
+					fpath->configured = FP_CONFIGURED;
+			}
 		}
 	}
 	return NF_ACCEPT;

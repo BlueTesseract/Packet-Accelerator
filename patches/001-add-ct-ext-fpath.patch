@@ -1,0 +1,24 @@
+diff --git a/include/net/netfilter/nf_conntrack_fpath.h b/include/net/netfilter/nf_conntrack_fpath.h
+index e547d3e99e34..f75c6e995168 100644
+--- a/include/net/netfilter/nf_conntrack_fpath.h
++++ b/include/net/netfilter/nf_conntrack_fpath.h
+@@ -14,8 +14,19 @@
+ #include <net/netfilter/nf_conntrack.h>
+ #include <net/netfilter/nf_conntrack_extend.h>
+ 
++#define FP_UNCONFIGURED 0
++#define FP_CONFIGURING  1
++#define FP_CONFIGURED   2
++
++#define DIR_IN_DEV  0
++#define DIR_OUT_DEV 1
++
+ struct nf_conn_fpath {
+ 	int todo;
++	int configured;
++	struct net_device *dev[2];
++	unsigned long skb_refdst[2];
++	struct dst_entry *dst[2];
+ };
+ 
+ static inline
